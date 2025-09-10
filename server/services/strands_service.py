@@ -35,6 +35,37 @@ from services.websocket_service import send_to_websocket, send_to_user_websocket
 from services.strands_context import SessionContextManager
 from services.user_context import get_current_user_id
 
+def _process_message_content_for_agent(content):
+    """
+    处理消息内容，过滤掉图像消息或将其转换为文本描述
+    确保传递给Agent的内容是纯文本格式
+    """
+    if isinstance(content, str):
+        # 如果是字符串，检查是否包含图像引用
+        if '/api/file/' in content and ('im_' in content or '.jpg' in content or '.png' in content):
+            # 这是包含图像引用的消息，转换为文本描述
+            return "[图像消息]"
+        return content
+
+    elif isinstance(content, list):
+        # 如果是列表，过滤掉图像内容，保留文本内容
+        text_parts = []
+        for item in content:
+            if isinstance(item, dict):
+                if item.get('type') == 'text' and 'text' in item:
+                    text_parts.append(item['text'])
+                elif item.get('type') == 'image_url':
+                    text_parts.append("[图像]")
+            elif isinstance(item, str):
+                text_parts.append(item)
+
+        return ' '.join(text_parts) if text_parts else None
+
+    else:
+        # 其他类型，尝试转换为字符串
+        return str(content) if content else None
+
+
 # 全局变量来跟踪已发送的事件，防止重复
 _sent_events = set()
 
@@ -252,13 +283,23 @@ Be helpful, accurate, and creative in your responses.
             # 将当前传入的messages与历史消息合并，去重
             all_messages = []
 
-            # 添加历史消息
+            # 添加历史消息，过滤掉图像内容
             for hist_msg in historical_messages:
                 if hist_msg.get('role') and hist_msg.get('content'):
-                    all_messages.append({
-                        'role': hist_msg['role'],
-                        'content': hist_msg['content']
-                    })
+                    # 处理content，过滤掉图像消息或转换为文本描述
+                    content = hist_msg['content']
+                    processed_content = _process_message_content_for_agent(content)
+
+                    if processed_content:  # 只添加有效的文本内容
+                        # 转换为Bedrock标准消息格式
+                        all_messages.append({
+                            'role': hist_msg['role'],
+                            'content': [
+                                {
+                                    'text': processed_content
+                                }
+                            ]
+                        })
 
             # 添加当前消息（如果不在历史中）
             for current_msg in messages:
@@ -272,9 +313,31 @@ Be helpful, accurate, and creative in your responses.
                             break
 
                     if not is_duplicate:
+                        # 转换当前消息为Bedrock标准格式
+                        content = current_msg['content']
+                        if isinstance(content, str):
+                            formatted_content = [{'text': content}]
+                        elif isinstance(content, list):
+                            # 转换列表格式，确保使用Bedrock格式
+                            formatted_content = []
+                            for item in content:
+                                if isinstance(item, dict):
+                                    if item.get('type') == 'text' and 'text' in item:
+                                        formatted_content.append({'text': item['text']})
+                                    elif 'text' in item and 'type' not in item:
+                                        formatted_content.append({'text': item['text']})
+                                    elif isinstance(item.get('text'), str):
+                                        formatted_content.append({'text': item['text']})
+                                elif isinstance(item, str):
+                                    formatted_content.append({'text': item})
+                            if not formatted_content:
+                                formatted_content = [{'text': str(content)}]
+                        else:
+                            formatted_content = [{'text': str(content)}]
+
                         all_messages.append({
                             'role': current_msg['role'],
-                            'content': current_msg['content']
+                            'content': formatted_content
                         })
 
             print(f"🔍 DEBUG: Total messages for agent: {len(all_messages)}")
@@ -295,9 +358,18 @@ Be helpful, accurate, and creative in your responses.
             all_messages = []
             for msg in messages:
                 if msg.get('role') and msg.get('content'):
+                    # 转换为Bedrock标准格式
+                    content = msg['content']
+                    if isinstance(content, str):
+                        formatted_content = [{'text': content}]
+                    elif isinstance(content, list):
+                        formatted_content = content  # 假设已经是正确格式
+                    else:
+                        formatted_content = [{'text': str(content)}]
+
                     all_messages.append({
                         'role': msg['role'],
-                        'content': msg['content']
+                        'content': formatted_content
                     })
 
             user_prompt = ""
@@ -361,6 +433,22 @@ Be helpful, accurate, and creative in your responses.
                 # 将历史消息转换为Strands Agent期望的格式
                 agent.messages = all_messages[:-1]  # 除了最后一条用户消息，其他都作为历史
                 print(f"🔍 DEBUG: Set {len(agent.messages)} historical messages to agent")
+
+                # 详细打印每条历史消息
+                for i, msg in enumerate(agent.messages):
+                    print(f"🔍 DEBUG: Historical message {i}: role={msg.get('role')}, content_type={type(msg.get('content'))}")
+                    content = msg.get('content', [])
+                    if isinstance(content, list) and len(content) > 0:
+                        first_block = content[0]
+                        if isinstance(first_block, dict) and 'text' in first_block:
+                            text_content = first_block['text']
+                            print(f"🔍 DEBUG: Content preview: {text_content[:100]}...")
+                        else:
+                            print(f"🔍 DEBUG: Content block: {first_block}")
+                    else:
+                        print(f"🔍 DEBUG: Content (unexpected format): {content}")
+
+                print(f"🔍 DEBUG: Current user prompt: {user_prompt[:100]}...")
 
             print(f"✅ Agent created with {len(tools)} tools")
 
@@ -475,6 +563,22 @@ For analysis, research, or data processing tasks, use your own reasoning capabil
             agent.messages = all_messages[:-1]  # 除了最后一条用户消息，其他都作为历史
             print(f"🔍 DEBUG: Multi-agent set {len(agent.messages)} historical messages to agent")
 
+            # 详细打印每条历史消息
+            for i, msg in enumerate(agent.messages):
+                print(f"🔍 DEBUG: Multi-agent historical message {i}: role={msg.get('role')}, content_type={type(msg.get('content'))}")
+                content = msg.get('content', [])
+                if isinstance(content, list) and len(content) > 0:
+                    first_block = content[0]
+                    if isinstance(first_block, dict) and 'text' in first_block:
+                        text_content = first_block['text']
+                        print(f"🔍 DEBUG: Multi-agent content preview: {text_content[:100]}...")
+                    else:
+                        print(f"🔍 DEBUG: Multi-agent content block: {first_block}")
+                else:
+                    print(f"🔍 DEBUG: Multi-agent content (unexpected format): {content}")
+
+            print(f"🔍 DEBUG: Multi-agent current user prompt: {user_prompt[:100]}...")
+
         print(f"✅ Multi-agent created successfully")
         
         # 获取历史消息并转换为Strands格式（与单Agent模式相同的逻辑）
@@ -486,13 +590,23 @@ For analysis, research, or data processing tasks, use your own reasoning capabil
             # 将当前传入的messages与历史消息合并，去重
             all_messages = []
 
-            # 添加历史消息
+            # 添加历史消息，过滤掉图像内容
             for hist_msg in historical_messages:
                 if hist_msg.get('role') and hist_msg.get('content'):
-                    all_messages.append({
-                        'role': hist_msg['role'],
-                        'content': hist_msg['content']
-                    })
+                    # 处理content，过滤掉图像消息或转换为文本描述
+                    content = hist_msg['content']
+                    processed_content = _process_message_content_for_agent(content)
+
+                    if processed_content:  # 只添加有效的文本内容
+                        # 转换为Bedrock标准消息格式
+                        all_messages.append({
+                            'role': hist_msg['role'],
+                            'content': [
+                                {
+                                    'text': processed_content
+                                }
+                            ]
+                        })
 
             # 添加当前消息（如果不在历史中）
             for current_msg in messages:
@@ -506,9 +620,31 @@ For analysis, research, or data processing tasks, use your own reasoning capabil
                             break
 
                     if not is_duplicate:
+                        # 转换当前消息为Bedrock标准格式
+                        content = current_msg['content']
+                        if isinstance(content, str):
+                            formatted_content = [{'text': content}]
+                        elif isinstance(content, list):
+                            # 转换列表格式，确保使用Bedrock格式
+                            formatted_content = []
+                            for item in content:
+                                if isinstance(item, dict):
+                                    if item.get('type') == 'text' and 'text' in item:
+                                        formatted_content.append({'text': item['text']})
+                                    elif 'text' in item and 'type' not in item:
+                                        formatted_content.append({'text': item['text']})
+                                    elif isinstance(item.get('text'), str):
+                                        formatted_content.append({'text': item['text']})
+                                elif isinstance(item, str):
+                                    formatted_content.append({'text': item})
+                            if not formatted_content:
+                                formatted_content = [{'text': str(content)}]
+                        else:
+                            formatted_content = [{'text': str(content)}]
+
                         all_messages.append({
                             'role': current_msg['role'],
-                            'content': current_msg['content']
+                            'content': formatted_content
                         })
 
             print(f"🔍 DEBUG: Multi-agent total messages: {len(all_messages)}")
@@ -529,9 +665,18 @@ For analysis, research, or data processing tasks, use your own reasoning capabil
             all_messages = []
             for msg in messages:
                 if msg.get('role') and msg.get('content'):
+                    # 转换为Bedrock标准格式
+                    content = msg['content']
+                    if isinstance(content, str):
+                        formatted_content = [{'text': content}]
+                    elif isinstance(content, list):
+                        formatted_content = content  # 假设已经是正确格式
+                    else:
+                        formatted_content = [{'text': str(content)}]
+
                     all_messages.append({
                         'role': msg['role'],
-                        'content': msg['content']
+                        'content': formatted_content
                     })
 
             user_prompt = ""

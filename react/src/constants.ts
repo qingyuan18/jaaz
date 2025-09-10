@@ -132,6 +132,7 @@ export const DEFAULT_PROVIDERS_CONFIG: { [key: string]: LLMConfig } = {
   comfyui: {
     models: {
       'flux-kontext': { type: 'comfyui', media_type: 'image' },
+      'flux-kontext-multiple': { type: 'comfyui', media_type: 'image' },
       'flux-t2i': { type: 'comfyui', media_type: 'image' },
       'wan-t2v': { type: 'comfyui', media_type: 'video' },
       'wan-i2v': { type: 'comfyui', media_type: 'video' },

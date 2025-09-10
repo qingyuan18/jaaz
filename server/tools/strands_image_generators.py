@@ -18,6 +18,7 @@ import traceback
 import os
 import asyncio
 from mimetypes import guess_type
+from typing import List, Dict, Optional
 
 from pydantic import BaseModel, Field
 from strands import tool
@@ -75,6 +76,135 @@ except ImportError as e:
 # 生成唯一文件 ID
 def generate_file_id():
     return 'im_' + generate(size=8)
+
+
+def get_recent_images_from_session(session_id: str, user_id: str = None, count: int = 5) -> List[Dict]:
+    """
+    从指定session中获取最近的N张图像（包括用户上传的和助手生成的），按时间排序
+
+    Args:
+        session_id: 会话ID
+        user_id: 用户ID，如果提供则用于用户验证
+        count: 获取图像数量，默认5张
+
+    Returns:
+        List[Dict]: [
+            {
+                "file_id": "im_xxx.png",
+                "timestamp": "2024-01-01T12:00:00Z",
+                "index": 1  # 第几张图像（从1开始）
+            }
+        ]
+    """
+    try:
+        print(f"🔍 DEBUG: get_recent_images_from_session called with session_id={session_id}, user_id={user_id}, count={count}")
+        # 获取session的聊天历史
+        if user_id:
+            from services.user_context import UserContextManager
+            with UserContextManager(user_id):
+                messages = db_service.get_chat_history(session_id)
+        else:
+            try:
+                messages = db_service.get_chat_history(session_id)
+            except Exception as auth_error:
+                try:
+                    from services.strands_context import get_user_id
+                    strands_user_id = get_user_id()
+                    if strands_user_id:
+                        from services.user_context import UserContextManager
+                        with UserContextManager(strands_user_id):
+                            messages = db_service.get_chat_history(session_id)
+                    else:
+                        raise auth_error
+                except Exception as e:
+                    raise auth_error
+
+        # 收集所有图像，按时间排序
+        images = []
+        for message in messages:
+            if not isinstance(message, dict):
+                continue
+
+            # 获取消息时间戳
+            timestamp = message.get('timestamp', message.get('created_at', ''))
+
+            if message.get('content'):
+                content = message.get('content', [])
+
+                # 处理字符串格式的content
+                if isinstance(content, str):
+                    try:
+                        import json
+                        parsed_content = json.loads(content)
+                        if isinstance(parsed_content, list):
+                            for item in parsed_content:
+                                if (isinstance(item, dict) and
+                                    item.get('type') == 'image_url' and
+                                    item.get('image_url', {}).get('url')):
+                                    url = item['image_url']['url']
+                                    if '/api/file/' in url:
+                                        file_id = url.split('/api/file/')[-1]
+                                        images.append({
+                                            'file_id': file_id,
+                                            'timestamp': timestamp,
+                                            'message_role': message.get('role', 'unknown')
+                                        })
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+
+                    # 查找字符串中的图像引用
+                    import re
+                    image_pattern = r'/api/file/(im_[a-zA-Z0-9_-]+\.[a-zA-Z0-9]+)'
+                    matches = re.findall(image_pattern, content)
+                    for file_id in matches:
+                        images.append({
+                            'file_id': file_id,
+                            'timestamp': timestamp,
+                            'message_role': message.get('role', 'unknown')
+                        })
+
+                # 处理列表格式的content
+                elif isinstance(content, list):
+                    for item in content:
+                        if (isinstance(item, dict) and
+                            item.get('type') == 'image_url' and
+                            item.get('image_url', {}).get('url')):
+                            url = item['image_url']['url']
+                            if '/api/file/' in url:
+                                file_id = url.split('/api/file/')[-1]
+                                images.append({
+                                    'file_id': file_id,
+                                    'timestamp': timestamp,
+                                    'message_role': message.get('role', 'unknown')
+                                })
+
+        # 按时间戳排序（最新的在前）
+        images.sort(key=lambda x: x.get('timestamp', ''), reverse=True)
+
+        # 去重（保留最新的）
+        seen_files = set()
+        unique_images = []
+        for img in images:
+            if img['file_id'] not in seen_files:
+                seen_files.add(img['file_id'])
+                unique_images.append(img)
+
+        # 限制数量并添加索引
+        result = []
+        for i, img in enumerate(unique_images[:count]):
+            result.append({
+                'file_id': img['file_id'],
+                'timestamp': img['timestamp'],
+                'index': i + 1,
+                'message_role': img['message_role']
+            })
+
+        print(f"🎯 Found {len(result)} recent images in session")
+        return result
+
+    except Exception as e:
+        print(f"❌ Error getting recent images from session {session_id}: {e}")
+        return []
 
 
 def get_most_recent_image_from_session(session_id: str, user_id: str = None) -> str:
@@ -197,6 +327,136 @@ def get_most_recent_image_from_session(session_id: str, user_id: str = None) -> 
         return ""
 
 
+def parse_image_references(prompt: str, available_images: List[Dict]) -> Dict:
+    """
+    解析用户prompt中的图像引用，支持简单关键词匹配
+
+    Args:
+        prompt: 用户输入的提示词
+        available_images: 可用的历史图像列表
+
+    Returns:
+        Dict: {
+            'referenced_images': [1, 2],  # 引用的图像索引
+            'fusion_mode': 'blend',       # 融合模式
+            'processed_prompt': '...',    # 处理后的prompt
+            'model_suggestion': 'flux-kontext-multiple'  # 建议的模型
+        }
+    """
+    import re
+
+    result = {
+        'referenced_images': [],
+        'fusion_mode': 'auto',
+        'processed_prompt': prompt,
+        'model_suggestion': 'flux-kontext'
+    }
+
+    # 提取数字引用：第1张、第2张、图像1、image 1等
+    number_patterns = [
+        r'第(\d+)张',
+        r'第(\d+)个',
+        r'图像(\d+)',
+        r'图片(\d+)',
+        r'image\s*(\d+)',
+        r'pic\s*(\d+)',
+        r'(\d+)号图'
+    ]
+
+    referenced_numbers = []
+    for pattern in number_patterns:
+        matches = re.findall(pattern, prompt.lower())
+        referenced_numbers.extend([int(m) for m in matches])
+
+    # 去重并排序
+    referenced_numbers = sorted(list(set(referenced_numbers)))
+
+    # 检查特殊关键词
+    multi_image_keywords = [
+        '融合', '合并', '结合', '混合', '组合',
+        'blend', 'mix', 'combine', 'merge', 'fusion',
+        '两张', '多张', '前面', '所有'
+    ]
+
+    style_keywords = [
+        '风格', '样式', 'style', 'transfer', '迁移'
+    ]
+
+    # 判断是否有多图像意图
+    has_multi_intent = any(keyword in prompt.lower() for keyword in multi_image_keywords)
+    has_style_intent = any(keyword in prompt.lower() for keyword in style_keywords)
+
+    # 如果没有明确数字引用但有多图像关键词
+    if not referenced_numbers and has_multi_intent:
+        if '两张' in prompt or 'two' in prompt.lower():
+            referenced_numbers = [1, 2]
+        elif '前面' in prompt or 'previous' in prompt.lower():
+            # 使用最近的2张图像
+            referenced_numbers = [1, 2] if len(available_images) >= 2 else [1]
+        elif '所有' in prompt or 'all' in prompt.lower():
+            # 使用所有可用图像（最多3张）
+            referenced_numbers = list(range(1, min(len(available_images) + 1, 4)))
+
+    # 验证引用的图像是否存在
+    valid_references = []
+    for num in referenced_numbers:
+        if 1 <= num <= len(available_images):
+            valid_references.append(num)
+
+    result['referenced_images'] = valid_references
+
+    # 确定融合模式
+    if has_style_intent:
+        result['fusion_mode'] = 'style_transfer'
+    elif has_multi_intent and len(valid_references) >= 2:
+        result['fusion_mode'] = 'blend'
+    else:
+        result['fusion_mode'] = 'auto'
+
+    # 建议模型
+    if len(valid_references) >= 2:
+        result['model_suggestion'] = 'flux-kontext-multiple'
+    elif len(valid_references) == 1:
+        result['model_suggestion'] = 'flux-kontext'
+    else:
+        result['model_suggestion'] = 'flux-t2i'
+
+    # 处理prompt（移除图像引用词汇，保留核心描述）
+    processed = prompt
+    for pattern in number_patterns:
+        processed = re.sub(pattern, '', processed, flags=re.IGNORECASE)
+
+    # 清理多余的空格和标点
+    processed = re.sub(r'\s+', ' ', processed).strip()
+    processed = re.sub(r'^[,，、\s]+|[,，、\s]+$', '', processed)
+
+    if not processed:
+        processed = "create artistic image"
+
+    result['processed_prompt'] = processed
+
+    print(f"🔍 DEBUG: Image reference parsing result: {result}")
+    return result
+
+
+def select_optimal_model(prompt: str, available_images: List[Dict], current_model: str) -> str:
+    """
+    根据prompt和可用图像智能选择最优模型
+    """
+    parse_result = parse_image_references(prompt, available_images)
+    suggested_model = parse_result['model_suggestion']
+
+    # 如果当前模型已经合适，就不改变
+    if current_model == suggested_model:
+        return current_model
+
+    # 如果建议使用多图像模型但当前模型不支持，则切换
+    if suggested_model == 'flux-kontext-multiple':
+        return 'flux-kontext-multiple'
+
+    return current_model
+
+
 # Initialize provider instances
 PROVIDERS = {
     'replicate': ReplicateGenerator(),
@@ -216,7 +476,8 @@ def create_generate_image_with_context(session_id: str, canvas_id: str, image_mo
         prompt: str = Field(description="Detailed description of the image to generate"),
         aspect_ratio: str = Field(default="1:1", description="Aspect ratio for the image (1:1, 4:3, 16:9, 3:4)"),
         input_image: str = Field(default="", description="Optional image to use as reference. Pass image_id here, e.g. 'im_jurheut7.png'. Leave empty if not needed. Best for image editing cases like: Editing specific parts of the image, Removing specific objects, Maintaining visual elements across scenes"),
-        use_previous_image: bool = Field(default=True, description="Whether to automatically use the most recent image from the current session as input. Set to TRUE when you want to edit, modify, or build upon the previously generated image (e.g., 'change the color', 'add something', 'remove object'). Set to FALSE when creating a completely new, unrelated image or when the user explicitly asks for a new image.")
+        use_previous_image: bool = Field(default=True, description="Whether to automatically use the most recent image from the current session as input. Set to TRUE when you want to edit, modify, or build upon the previously generated image (e.g., 'change the color', 'add something', 'remove object'). Set to FALSE when creating a completely new, unrelated image or when the user explicitly asks for a new image."),
+        enable_multi_image: bool = Field(default=True, description="Whether to enable automatic multi-image detection and fusion. Set to TRUE to allow the system to automatically detect when user wants to combine multiple images (e.g., 'blend first and second image'). Set to FALSE to disable multi-image features.")
     ) -> str:
         """
         Generate an image based on the provided prompt and parameters.
@@ -243,20 +504,73 @@ def create_generate_image_with_context(session_id: str, canvas_id: str, image_mo
         try:
             # 使用提供的上下文信息而不是从contextvars获取
             tool_call_id = generate_file_id()
-            
+
             model = image_model.get('model', 'flux-kontext')
             provider = image_model.get('provider', 'comfyui')
-            
+
             print(f"🔍 DEBUG: model={model}, provider={provider}")
-            
+            print(f"🔍 DEBUG: enable_multi_image={enable_multi_image}")
+
             # Get provider instance
             generator = PROVIDERS.get(provider)
             if not generator:
                 raise ValueError(f"Unsupported provider: {provider}")
-            
+
             # Handle input_image parameter
             if not isinstance(input_image, str):
                 input_image = ""
+
+            # Multi-image detection and processing
+            multi_image_context = None
+            if enable_multi_image and not input_image:
+                # Get recent images from session
+                effective_user_id = user_id
+                if not effective_user_id:
+                    try:
+                        from services.strands_context import get_user_id
+                        effective_user_id = get_user_id()
+                    except Exception:
+                        pass
+
+                if effective_user_id:
+                    available_images = get_recent_images_from_session(session_id, effective_user_id, count=5)
+                    print(f"🔍 DEBUG: Found {len(available_images)} available images")
+
+                    if available_images:
+                        # Parse image references in prompt
+                        parse_result = parse_image_references(prompt, available_images)
+                        print(f"🔍 DEBUG: Parse result: {parse_result}")
+
+                        # If multiple images are referenced, prepare multi-image context
+                        if len(parse_result['referenced_images']) >= 2:
+                            print(f"🔍 DEBUG: Multi-image mode detected, switching to flux-kontext-multiple")
+                            model = 'flux-kontext-multiple'  # Override model for multi-image
+
+                            # Prepare multi-image context
+                            referenced_images = []
+                            for img_index in parse_result['referenced_images']:
+                                if img_index <= len(available_images):
+                                    img_info = available_images[img_index - 1]  # Convert to 0-based index
+                                    referenced_images.append(img_info)
+
+                            multi_image_context = {
+                                'images': referenced_images,
+                                'fusion_mode': parse_result['fusion_mode'],
+                                'original_prompt': prompt,
+                                'processed_prompt': parse_result['processed_prompt']
+                            }
+
+                            # Use processed prompt for generation
+                            prompt = parse_result['processed_prompt']
+                            print(f"🔍 DEBUG: Using processed prompt: {prompt}")
+
+                        elif len(parse_result['referenced_images']) == 1:
+                            # Single image reference, use traditional flow
+                            img_index = parse_result['referenced_images'][0]
+                            if img_index <= len(available_images):
+                                target_image = available_images[img_index - 1]
+                                input_image = target_image['file_id']
+                                print(f"🔍 DEBUG: Single image reference detected: {input_image}")
 
             # Check if the model supports input images before using previous image
             model_supports_input = 'kontext' in model.lower() or 'i2v' in model.lower() or 'edit' in model.lower()
@@ -367,12 +681,23 @@ def create_generate_image_with_context(session_id: str, canvas_id: str, image_mo
 
             # Generate image using async generator (直接使用 await)
             try:
+                # Prepare context for generator
+                generation_ctx = {
+                    'session_id': session_id,
+                    'tool_call_id': tool_call_id
+                }
+
+                # Add multi-image context if available
+                if multi_image_context:
+                    generation_ctx['multi_images'] = multi_image_context
+                    print(f"🔍 DEBUG: Passing multi-image context to generator")
+
                 file_id, width, height, file_path = await generator.generate(
                     prompt=prompt,
                     model=model,
                     aspect_ratio=aspect_ratio,
                     input_image=processed_input_image,
-                    ctx={'session_id': session_id, 'tool_call_id': tool_call_id}
+                    ctx=generation_ctx
                 )
             except Exception as e:
                 print(f"❌ Image generation error: {e}")
