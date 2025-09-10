@@ -39,7 +39,7 @@
   },
   "31": {
     "inputs": {
-      "seed": 280430857384742,
+      "seed": 715284446416392,
       "steps": 20,
       "cfg": 1,
       "sampler_name": "euler",
@@ -114,7 +114,7 @@
   "42": {
     "inputs": {
       "image": [
-        "200",
+        "146",
         0
       ]
     },
@@ -141,111 +141,19 @@
   },
   "135": {
     "inputs": {
-      "text": "",
-      "speak_and_recognation": {
-        "__value__": [
-          false,
-          true
-        ]
-      },
-      "clip": [
-        "38",
-        0
-      ]
-    },
-    "class_type": "CLIPTextEncode",
-    "_meta": {
-      "title": "CLIP文本编码"
-    }
-  },
-  "146": {
-    "inputs": {
-      "image": [
-        "197",
-        0
-      ]
-    },
-    "class_type": "ImageScale",
-    "_meta": {
-      "title": "图像缩放"
-    }
-  },
-  "177": {
-    "inputs": {
       "conditioning": [
         "6",
         0
-      ],
-      "image": [
-        "146",
-        0
       ]
     },
-    "class_type": "FluxKontextConditioning",
+    "class_type": "ConditioningZeroOut",
     "_meta": {
-      "title": "FluxKontextConditioning"
+      "title": "条件零化"
     }
   },
-  "196": {
+  "136": {
     "inputs": {
-      "text": "artistic fusion of two images"
-    },
-    "class_type": "StringConstant",
-    "_meta": {
-      "title": "文本常量"
-    }
-  },
-  "197": {
-    "inputs": {
-      "image": ""
-    },
-    "class_type": "ETN_LoadImageBase64",
-    "_meta": {
-      "title": "加载图像Base64 - 第1张"
-    }
-  },
-  "198": {
-    "inputs": {
-      "image": ""
-    },
-    "class_type": "ETN_LoadImageBase64",
-    "_meta": {
-      "title": "加载图像Base64 - 第2张"
-    }
-  },
-  "199": {
-    "inputs": {
-      "image": ""
-    },
-    "class_type": "ETN_LoadImageBase64",
-    "_meta": {
-      "title": "加载图像Base64 - 第3张"
-    }
-  },
-  "200": {
-    "inputs": {
-      "image1": [
-        "197",
-        0
-      ],
-      "image2": [
-        "198",
-        0
-      ],
-      "image3": [
-        "199",
-        0
-      ],
-      "fusion_mode": "blend"
-    },
-    "class_type": "ImageBlendMultiple",
-    "_meta": {
-      "title": "多图像融合节点"
-    }
-  },
-  "9": {
-    "inputs": {
-      "filename_prefix": "ComfyUI_Multiple",
+      "filename_prefix": "pl-kontext-dev",
       "images": [
         "8",
         0
@@ -254,6 +162,75 @@
     "class_type": "SaveImage",
     "_meta": {
       "title": "保存图像"
+    }
+  },
+  "146": {
+    "inputs": {
+      "direction": "right",
+      "match_image_size": true,
+      "spacing_width": 0,
+      "spacing_color": "white",
+      "image1": [
+        "197",
+        0
+      ],
+      "image2": [
+        "201",
+        0
+      ]
+    },
+    "class_type": "ImageStitch",
+    "_meta": {
+      "title": "Image Stitch"
+    }
+  },
+  "177": {
+    "inputs": {
+      "conditioning": [
+        "6",
+        0
+      ],
+      "latent": [
+        "124",
+        0
+      ]
+    },
+    "class_type": "ReferenceLatent",
+    "_meta": {
+      "title": "ReferenceLatent"
+    }
+  },
+  "196": {
+    "inputs": {
+      "text": "write blue 3D style “I  ♡ chengdu” on the t-shirt of the girl",
+      "speak_and_recognation": {
+        "__value__": [
+          false,
+          true
+        ]
+      }
+    },
+    "class_type": "Text Multiline",
+    "_meta": {
+      "title": "Text Multiline"
+    }
+  },
+  "197": {
+    "inputs": {
+      "image": ""
+    },
+    "class_type": "ETN_LoadImageBase64",
+    "_meta": {
+      "title": "Load Image (Base64)"
+    }
+  },
+  "201": {
+    "inputs": {
+      "image": ""
+    },
+    "class_type": "ETN_LoadImageBase64",
+    "_meta": {
+      "title": "Load Image (Base64)"
     }
   }
 }
