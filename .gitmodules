@@ -1,3 +1,0 @@
-[submodule "server/openmanus"]
-	path = server/openmanus
-	url = https://github.com/mannaandpoem/OpenManus
