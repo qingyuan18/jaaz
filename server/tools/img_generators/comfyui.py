@@ -46,6 +46,8 @@ class ComfyUIGenerator(ImageGenerator):
         self.flux_kontext_multiple_workflow = None
 
         try:
+            print(f"🔍 DEBUG: Loading ComfyUI workflow files...")
+
             self.flux_comfy_workflow = json.load(open(asset_dir, 'r'))
             self.basic_comfy_t2i_workflow = json.load(
                 open(basic_comfy_t2i_workflow, 'r'))
@@ -89,33 +91,37 @@ class ComfyUIGenerator(ImageGenerator):
             if 'multiple' in model and ctx.get('multi_images'):
                 if not self.flux_kontext_multiple_workflow:
                     print("⚠️ flux-kontext-multiple workflow not available, falling back to single image")
+                    print(f"🔍 DEBUG: Executing workflow file: flux_kontext_workflow.json (fallback)")
                     if not self.flux_kontext_workflow:
                         raise Exception('Flux kontext workflow json not found')
                     return await self._run_flux_kontext_workflow(prompt, input_image, host, port, ctx)
                 else:
+                    print(f"🔍 DEBUG: Executing workflow file: flux_kontext_multiple_workflow.json")
                     return await self._run_flux_kontext_multiple_workflow(prompt, input_image, host, port, ctx)
             else:
+                print(f"🔍 DEBUG: Executing workflow file: flux_kontext_workflow.json (single image mode)")
                 if not self.flux_kontext_workflow:
                     raise Exception('Flux kontext workflow json not found')
                 return await self._run_flux_kontext_workflow(prompt, input_image, host, port, ctx)
 
         # Handle other flux models
         elif 'flux' in model:
-            print(f"🔍 DEBUG: Using flux workflow for model: {model}")
+            print(f"🔍 DEBUG: Executing workflow file: flux_comfy_workflow.json")
             if not self.flux_comfy_workflow:
                 raise Exception('Flux workflow json not found')
             workflow = copy.deepcopy(self.flux_comfy_workflow)
             workflow['6']['inputs']['text'] = prompt
-            workflow['31']['inputs']['seed'] = random.randint(0, 99999999998)
-            print(f"🔍 DEBUG: Flux workflow configured with prompt and model")
+            seed_val = random.randint(0, 99999999998)
+            workflow['31']['inputs']['seed'] = seed_val
+            print(f"🔧 Workflow params (flux): aspect_ratio={aspect_ratio}, seed={seed_val}, text_preview={prompt[:80]!r}, ctx_keys={list(ctx.keys())}")
         else:
-            print(f"🔍 DEBUG: Using basic workflow for model: {model}")
+            print(f"🔍 DEBUG: Executing workflow file: basic_comfy_t2i_workflow.json")
             if not self.basic_comfy_t2i_workflow:
                 raise Exception('Basic workflow json not found')
             workflow = copy.deepcopy(self.basic_comfy_t2i_workflow)
             workflow['6']['inputs']['text'] = prompt
             workflow['4']['inputs']['ckpt_name'] = model
-            print(f"🔍 DEBUG: Basic workflow configured with prompt and model")
+            print(f"🔧 Workflow params (basic_t2i): aspect_ratio={aspect_ratio}, text_preview={prompt[:80]!r}, model={model}, ctx_keys={list(ctx.keys())}")
 
         execution = await execute(workflow, host, port, ctx=ctx)
 
@@ -136,8 +142,10 @@ class ComfyUIGenerator(ImageGenerator):
         """
         Run flux kontext workflow similar to the provided reference implementation
         """
+        print(f"🔍 DEBUG: _run_flux_kontext_workflow called - using flux_kontext_workflow.json")
         workflow = copy.deepcopy(self.flux_kontext_workflow)
 
+        has_input = bool(input_image_base64)
         if input_image_base64:
             workflow['197']['inputs']['image'] = input_image_base64
         else:
@@ -146,10 +154,16 @@ class ComfyUIGenerator(ImageGenerator):
             # 1x1 transparent PNG in base64
             placeholder_image = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVQIHWNgAAIAAAUAAY27m/MAAAAASUVORK5CYII="
             workflow['197']['inputs']['image'] = placeholder_image
-            print("🔍 DEBUG: Using placeholder image for flux-kontext workflow (no input image provided)")
+            print("🔍 DEBUG: Using placeholder image (no input image provided)")
 
         workflow['196']['inputs']['text'] = user_prompt
-        workflow['31']['inputs']['seed'] = random.randint(0, 99999999998)
+        seed_val = random.randint(0, 99999999998)
+        workflow['31']['inputs']['seed'] = seed_val
+        try:
+            mcount = len((ctx or {}).get('multi_images', {}).get('images', []))
+        except Exception:
+            mcount = 0
+        print(f"🔧 Workflow params (kontext): has_input={has_input}, seed={seed_val}, text_preview={user_prompt[:80]!r}, multi_images={mcount}")
 
         execution = await execute(workflow, host, port, ctx=ctx)
 
@@ -170,11 +184,11 @@ class ComfyUIGenerator(ImageGenerator):
         """
         Run flux kontext multiple workflow for multi-image fusion
         """
+        print(f"🔍 DEBUG: _run_flux_kontext_multiple_workflow called - using flux_kontext_multiple_workflow.json")
         workflow = copy.deepcopy(self.flux_kontext_multiple_workflow)
         multi_images = ctx.get('multi_images', {})
 
-        print(f"🔍 DEBUG: Running flux-kontext-multiple workflow")
-        print(f"🔍 DEBUG: Multi-images context: {multi_images}")
+        print(f"🎯 Running flux-kontext-multiple workflow with {len(multi_images.get('images', []))} images")
 
         # Convert referenced images to base64
         image_data_list = []
@@ -186,7 +200,31 @@ class ComfyUIGenerator(ImageGenerator):
                 import os
                 import base64
 
-                file_path = os.path.join(FILES_DIR, file_id)
+                # Try to find the file using the same logic as get_file endpoint
+                file_path = None
+
+                # First try to get file info from database
+                try:
+                    from services.db_service import db_service
+                    file_id_without_ext = file_id.split('.')[0] if '.' in file_id else file_id
+                    file_record = db_service.get_file(file_id_without_ext)
+                    if file_record:
+                        file_path = os.path.join(FILES_DIR, file_record['file_path'])
+                except Exception:
+                    pass  # Continue with fallback
+
+                # Fallback: try direct path
+                if not file_path or not os.path.exists(file_path):
+                    file_path = os.path.join(FILES_DIR, file_id)
+
+                # If file doesn't exist and no extension, try common extensions
+                if not os.path.exists(file_path) and '.' not in file_id:
+                    for ext in ['png', 'jpg', 'jpeg', 'gif', 'webp']:
+                        test_path = os.path.join(FILES_DIR, f'{file_id}.{ext}')
+                        if os.path.exists(test_path):
+                            file_path = test_path
+                            break
+
                 if os.path.exists(file_path):
                     with open(file_path, 'rb') as f:
                         image_data = f.read()
@@ -205,38 +243,37 @@ class ComfyUIGenerator(ImageGenerator):
         if len(image_data_list) < 2:
             raise Exception("At least 2 images are required for multi-image workflow")
 
-        # Configure workflow nodes (预留节点ID，等待实际workflow文件)
-        # 这些节点ID是预留的，实际workflow文件提供后需要调整
-
+        # Configure workflow nodes
         # 主要图像输入节点 (第1张图像)
         if '197' in workflow:
             workflow['197']['inputs']['image'] = image_data_list[0]['base64']
-            print(f"🔍 DEBUG: Set node 197 with first image")
 
         # 第二张图像输入节点 (第2张图像)
-        if '198' in workflow:
-            workflow['198']['inputs']['image'] = image_data_list[1]['base64']
-            print(f"🔍 DEBUG: Set node 198 with second image")
+        if '201' in workflow:
+            workflow['201']['inputs']['image'] = image_data_list[1]['base64']
 
         # 如果有第三张图像
         if len(image_data_list) >= 3 and '199' in workflow:
             workflow['199']['inputs']['image'] = image_data_list[2]['base64']
-            print(f"🔍 DEBUG: Set node 199 with third image")
+
 
         # 文本prompt节点
         if '196' in workflow:
             workflow['196']['inputs']['text'] = user_prompt
-            print(f"🔍 DEBUG: Set prompt: {user_prompt}")
-
-        # 融合模式节点 (如果workflow支持)
-        fusion_mode = multi_images.get('fusion_mode', 'blend')
-        if '200' in workflow and 'fusion_mode' in workflow['200']['inputs']:
-            workflow['200']['inputs']['fusion_mode'] = fusion_mode
-            print(f"🔍 DEBUG: Set fusion mode: {fusion_mode}")
 
         # 随机种子
         if '31' in workflow:
             workflow['31']['inputs']['seed'] = random.randint(0, 99999999998)
+        try:
+            indices = [img.get('index') for img in image_data_list]
+        except Exception:
+            indices = []
+        try:
+            seed_val = workflow.get('31', {}).get('inputs', {}).get('seed')
+        except Exception:
+            seed_val = None
+        print(f"🔧 Workflow params (kontext-multiple): images={len(image_data_list)}, indices={indices}, seed={seed_val}, text_preview={user_prompt[:80]!r}")
+
 
         execution = await execute(workflow, host, port, ctx=ctx)
 

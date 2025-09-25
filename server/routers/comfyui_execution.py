@@ -109,6 +109,10 @@ class WorkflowExecution:
 
     async def queue(self):
         data = {"prompt": self.workflow, "client_id": self.client_id}
+
+        # 打印工作流基本信息用于调试
+        print(f"🔍 DEBUG: ComfyUI Workflow queued with {len(self.workflow)} nodes")
+
         async with httpx.AsyncClient() as client:
             try:
                 response = await client.post(f"http://{self.host}:{self.port}/prompt", json=data)

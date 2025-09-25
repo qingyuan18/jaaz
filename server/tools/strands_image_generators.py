@@ -18,7 +18,7 @@ import traceback
 import os
 import asyncio
 from mimetypes import guess_type
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Annotated
 
 from pydantic import BaseModel, Field
 from strands import tool
@@ -97,7 +97,7 @@ def get_recent_images_from_session(session_id: str, user_id: str = None, count: 
         ]
     """
     try:
-        print(f"🔍 DEBUG: get_recent_images_from_session called with session_id={session_id}, user_id={user_id}, count={count}")
+        # print(f"🔍 DEBUG: get_recent_images_from_session called with session_id={session_id}, user_id={user_id}, count={count}")
         # 获取session的聊天历史
         if user_id:
             from services.user_context import UserContextManager
@@ -199,7 +199,7 @@ def get_recent_images_from_session(session_id: str, user_id: str = None, count: 
                 'message_role': img['message_role']
             })
 
-        print(f"🎯 Found {len(result)} recent images in session")
+        # print(f"🎯 Found {len(result)} recent images in session")
         return result
 
     except Exception as e:
@@ -327,21 +327,167 @@ def get_most_recent_image_from_session(session_id: str, user_id: str = None) -> 
         return ""
 
 
-def parse_image_references(prompt: str, available_images: List[Dict]) -> Dict:
+def parse_image_references_with_llm(prompt: str, available_images: List[Dict], model_config: dict = None) -> Dict:
     """
-    解析用户prompt中的图像引用，支持简单关键词匹配
+    使用Strands服务中的analyze_image_intent工具进行LLM分析解析用户prompt中的图像引用
+    注意：这个函数现在主要作为向后兼容的接口，实际的LLM分析应该通过Agent调用analyze_image_intent工具
+    """
+    try:
+        print(f"🔍 DEBUG: 使用LLM分析图像意图，prompt: {prompt}, 可用图像数: {len(available_images)}")
 
-    Args:
-        prompt: 用户输入的提示词
-        available_images: 可用的历史图像列表
+        # 这里暂时回退到关键词匹配，因为真正的LLM分析应该在Agent层面进行
+        # 当Agent有analyze_image_intent工具时，它会自动调用该工具进行分析
+        print(f"🔍 DEBUG: 当前在工具内部，回退到关键词匹配")
+        return parse_image_references_with_keywords(prompt, available_images)
 
-    Returns:
-        Dict: {
-            'referenced_images': [1, 2],  # 引用的图像索引
-            'fusion_mode': 'blend',       # 融合模式
-            'processed_prompt': '...',    # 处理后的prompt
-            'model_suggestion': 'flux-kontext-multiple'  # 建议的模型
-        }
+    except Exception as e:
+        print(f"❌ LLM分析失败，回退到关键词匹配: {e}")
+        return parse_image_references_with_keywords(prompt, available_images)
+
+
+def parse_image_references_with_keywords(prompt: str, available_images: List[Dict]) -> Dict:
+    """
+    使用关键词匹配解析用户prompt中的图像引用（备用方法）
+    """
+    print(f"🔍 DEBUG: 关键词分析用户prompt: {prompt}")
+    print(f"🔍 DEBUG: 可用图像数量: {len(available_images)}")
+
+    # 使用关键词匹配和语义分析
+    referenced_images = []
+    fusion_mode = 'auto'
+
+    # 检测图像引用的关键词模式
+    image_reference_patterns = [
+        # 中文数字表达
+        ('第一张', 1), ('第二张', 2), ('第三张', 3),
+        ('第一个', 1), ('第二个', 2), ('第三个', 3),
+        ('第一幅', 1), ('第二幅', 2), ('第三幅', 3),
+        # 阿拉伯数字表达
+        ('图1', 1), ('图2', 2), ('图3', 3),
+        ('图片1', 1), ('图片2', 2), ('图片3', 3),
+        ('第1张', 1), ('第2张', 2), ('第3张', 3),
+        # 英文表达
+        ('first image', 1), ('second image', 2), ('third image', 3),
+        ('image 1', 1), ('image 2', 2), ('image 3', 3),
+    ]
+
+    # 隐式单图像引用关键词（指向最近的图像）
+    implicit_single_image_keywords = [
+        '这张图', '这个图', '这幅图', '图片', '图像', '照片',
+        'this image', 'the image', 'this picture', 'the picture', 'this photo',
+        '修改', '编辑', '改变', '调整', '优化', '美化',
+        'modify', 'edit', 'change', 'adjust', 'enhance', 'improve',
+        # 添加更多单图编辑相关的关键词
+        '背景', '换成', '替换', '变成', '改成', '颜色', '风格',
+        'background', 'replace', 'change to', 'make it', 'turn into'
+    ]
+
+    # 检查prompt中的明确图像引用
+    prompt_lower = prompt.lower()
+    for pattern, index in image_reference_patterns:
+        if pattern in prompt or pattern in prompt_lower:
+            if index <= len(available_images):
+                referenced_images.append(index)
+                print(f"🎯 检测到明确图像引用: '{pattern}' -> 图像{index}")
+
+    # 如果没有明确引用，检查隐式单图像引用
+    if not referenced_images:
+        print(f"🔍 DEBUG: 检查隐式单图像引用关键词...")
+        matched_keywords = []
+        for keyword in implicit_single_image_keywords:
+            if keyword in prompt or keyword in prompt_lower:
+                matched_keywords.append(keyword)
+
+        print(f"🔍 DEBUG: 匹配到的隐式关键词: {matched_keywords}")
+        has_implicit_reference = len(matched_keywords) > 0
+
+        if has_implicit_reference and len(available_images) >= 1:
+            referenced_images = [1]  # 使用最近的图像
+            print(f"🎯 检测到隐式图像引用，使用最近的图像，匹配关键词: {matched_keywords}")
+        else:
+            print(f"🔍 DEBUG: 没有检测到隐式图像引用")
+
+    # 去重并排序
+    referenced_images = sorted(list(set(referenced_images)))
+
+    # 检测融合意图的关键词
+    blend_keywords = [
+        '融合', '合并', '结合', '混合', '组合', '叠加',
+        'blend', 'mix', 'combine', 'merge', 'fusion', 'overlay'
+    ]
+
+    style_transfer_keywords = [
+        '风格', '样式', '戴上', '带上', '穿上', '应用',
+        'style', 'transfer', 'apply', 'wear', 'put on'
+    ]
+
+    # 判断融合模式
+    print(f"🔍 DEBUG: 检查融合意图关键词...")
+    matched_blend_keywords = []
+    for keyword in blend_keywords:
+        if keyword in prompt_lower:
+            matched_blend_keywords.append(keyword)
+
+    matched_style_keywords = []
+    for keyword in style_transfer_keywords:
+        if keyword in prompt_lower:
+            matched_style_keywords.append(keyword)
+
+    print(f"🔍 DEBUG: 匹配到的融合关键词: {matched_blend_keywords}")
+    print(f"🔍 DEBUG: 匹配到的风格迁移关键词: {matched_style_keywords}")
+
+    has_blend_intent = len(matched_blend_keywords) > 0
+    has_style_intent = len(matched_style_keywords) > 0
+
+    if has_style_intent:
+        fusion_mode = 'style_transfer'
+        print(f"🎯 检测到风格迁移意图，匹配关键词: {matched_style_keywords}")
+        # 如果是风格迁移但没有明确引用，假设使用前两张图像
+        if not referenced_images and len(available_images) >= 2:
+            referenced_images = [1, 2]
+            print(f"🎯 风格迁移模式，自动使用前两张图像")
+    elif has_blend_intent:
+        fusion_mode = 'blend'
+        print(f"🎯 检测到图像融合意图，匹配关键词: {matched_blend_keywords}")
+        # 如果是融合但没有明确引用，假设使用前两张图像
+        if not referenced_images and len(available_images) >= 2:
+            referenced_images = [1, 2]
+            print(f"🎯 融合模式，自动使用前两张图像")
+    else:
+        print(f"🔍 DEBUG: 没有检测到融合或风格迁移意图")
+
+    # 验证引用的图像是否存在
+    valid_references = []
+    for num in referenced_images:
+        if 1 <= num <= len(available_images):
+            valid_references.append(num)
+
+    # 构建结果
+    result = {
+        'referenced_images': valid_references,
+        'fusion_mode': fusion_mode,
+        'processed_prompt': prompt,  # 保持原prompt
+        'model_suggestion': 'flux-kontext'
+    }
+
+    # 建议模型
+    if len(valid_references) >= 2:
+        result['model_suggestion'] = 'flux-kontext-multiple'
+        print(f"🎯 建议使用多图像模型: flux-kontext-multiple")
+    elif len(valid_references) == 1:
+        result['model_suggestion'] = 'flux-kontext'
+        print(f"🎯 建议使用单图像模型: flux-kontext")
+    else:
+        result['model_suggestion'] = 'flux-t2i'
+        print(f"🎯 建议使用文本到图像模型: flux-t2i")
+
+    print(f"🎯 智能分析最终结果: 引用图像{valid_references}, 模式:{fusion_mode}, 模型:{result['model_suggestion']}")
+    return result
+
+
+def parse_image_references_regex(prompt: str, available_images: List[Dict]) -> Dict:
+    """
+    使用正则表达式解析用户prompt中的图像引用（备用方法）
     """
     import re
 
@@ -358,15 +504,40 @@ def parse_image_references(prompt: str, available_images: List[Dict]) -> Dict:
         r'第(\d+)个',
         r'图像(\d+)',
         r'图片(\d+)',
+        r'图(\d+)',  # 添加对 "图1", "图2" 的支持
         r'image\s*(\d+)',
         r'pic\s*(\d+)',
         r'(\d+)号图'
     ]
 
+    # 中文数字映射
+    chinese_numbers = {
+        '一': 1, '二': 2, '三': 3, '四': 4, '五': 5,
+        '六': 6, '七': 7, '八': 8, '九': 9, '十': 10
+    }
+
+    # 中文数字引用模式：第一张、第二张等（允许后面跟其他词汇）
+    chinese_patterns = [
+        r'第([一二三四五六七八九十])张',
+        r'第([一二三四五六七八九十])个',
+        r'第([一二三四五六七八九十])幅',
+        r'第([一二三四五六七八九十])张[^，。]*',  # 第一张模特、第二张里面等
+        r'第([一二三四五六七八九十])个[^，。]*',  # 第一个图像等
+    ]
+
     referenced_numbers = []
+
+    # 处理阿拉伯数字模式
     for pattern in number_patterns:
         matches = re.findall(pattern, prompt.lower())
         referenced_numbers.extend([int(m) for m in matches])
+
+    # 处理中文数字模式
+    for pattern in chinese_patterns:
+        matches = re.findall(pattern, prompt)
+        for match in matches:
+            if match in chinese_numbers:
+                referenced_numbers.append(chinese_numbers[match])
 
     # 去重并排序
     referenced_numbers = sorted(list(set(referenced_numbers)))
@@ -439,11 +610,11 @@ def parse_image_references(prompt: str, available_images: List[Dict]) -> Dict:
     return result
 
 
-def select_optimal_model(prompt: str, available_images: List[Dict], current_model: str) -> str:
+def select_optimal_model(prompt: str, available_images: List[Dict], current_model: str, model_config: dict = None) -> str:
     """
     根据prompt和可用图像智能选择最优模型
     """
-    parse_result = parse_image_references(prompt, available_images)
+    parse_result = parse_image_references_with_llm(prompt, available_images, model_config)
     suggested_model = parse_result['model_suggestion']
 
     # 如果当前模型已经合适，就不改变
@@ -473,11 +644,12 @@ def create_generate_image_with_context(session_id: str, canvas_id: str, image_mo
 
     @tool
     async def generate_image_with_context(
-        prompt: str = Field(description="Detailed description of the image to generate"),
-        aspect_ratio: str = Field(default="1:1", description="Aspect ratio for the image (1:1, 4:3, 16:9, 3:4)"),
-        input_image: str = Field(default="", description="Optional image to use as reference. Pass image_id here, e.g. 'im_jurheut7.png'. Leave empty if not needed. Best for image editing cases like: Editing specific parts of the image, Removing specific objects, Maintaining visual elements across scenes"),
-        use_previous_image: bool = Field(default=True, description="Whether to automatically use the most recent image from the current session as input. Set to TRUE when you want to edit, modify, or build upon the previously generated image (e.g., 'change the color', 'add something', 'remove object'). Set to FALSE when creating a completely new, unrelated image or when the user explicitly asks for a new image."),
-        enable_multi_image: bool = Field(default=True, description="Whether to enable automatic multi-image detection and fusion. Set to TRUE to allow the system to automatically detect when user wants to combine multiple images (e.g., 'blend first and second image'). Set to FALSE to disable multi-image features.")
+        prompt: Annotated[str, Field(description="Detailed description of the image to generate")],
+        aspect_ratio: Annotated[str, Field(description="Aspect ratio for the image (1:1, 4:3, 16:9, 3:4)")] = "1:1",
+        input_image: Annotated[str, Field(description="Optional image to use as reference. Pass image_id here, e.g. 'im_jurheut7.png'. Leave empty if not needed. Best for image editing cases like: Editing specific parts of the image, Removing specific objects, Maintaining visual elements across scenes")] = "",
+        use_previous_image: Annotated[bool, Field(description="Whether to automatically use the most recent image from the current session as input. Set to TRUE when you want to edit, modify, or build upon the previously generated image (e.g., 'change the color', 'add something', 'remove object'). Set to FALSE when creating a completely new, unrelated image or when the user explicitly asks for a new image.")] = True,
+        enable_multi_image: Annotated[bool, Field(description="Whether to enable automatic multi-image detection and fusion. Set to TRUE to allow the system to automatically detect when user wants to combine multiple images (e.g., 'blend first and second image'). Set to FALSE to disable multi-image features.")] = True,
+        model_override: Annotated[str, Field(description="Override model to use (e.g., 'flux-kontext' or 'flux-kontext-multiple'). If set, this takes precedence over configured image model.")] = ""
     ) -> str:
         """
         Generate an image based on the provided prompt and parameters.
@@ -500,15 +672,38 @@ def create_generate_image_with_context(session_id: str, canvas_id: str, image_mo
         print(f"🔍 DEBUG: Using provided context - session_id: {session_id}, canvas_id: {canvas_id}")
         print(f"🔍 DEBUG: Using provided image_model: {image_model}")
         print(f"🔍 DEBUG: Using provided user_id: {user_id}")
-        
+
         try:
             # 使用提供的上下文信息而不是从contextvars获取
             tool_call_id = generate_file_id()
 
-            model = image_model.get('model', 'flux-kontext')
-            provider = image_model.get('provider', 'comfyui')
+            # Normalize model_override to avoid FieldInfo default leaking in when not passed
+            print(f"🔍 DEBUG: Incoming model_override (raw) = {model_override} | type={type(model_override)}")
+            _override = model_override if isinstance(model_override, str) else ""
 
-            print(f"🔍 DEBUG: model={model}, provider={provider}")
+            # Tool-layer fallback A: if no explicit override, read generation_model from session intention
+            if not _override.strip():
+                try:
+                    from services.strands_context import get_intention_result as _get_intent
+                    intent = _get_intent()
+                    gm = (intent or {}).get('generation_model')
+                    if isinstance(gm, str) and gm.strip():
+                        _override = gm.strip()
+                        print(f"🎯 Using session intention generation_model as override: {_override}")
+                except Exception as _e:
+                    print(f"⚠️ Failed to read intention result for fallback override: {_e}")
+
+            model = (_override.strip()) or image_model.get('model', 'flux-kontext')
+            if not isinstance(model, str):
+                # Final guardrail
+                model = str(model)
+
+            # Handle empty provider - use default if provider is empty string
+            provider = image_model.get('provider', 'comfyui')
+            if not provider or provider.strip() == '':
+                provider = 'comfyui'
+
+            print(f"🔍 DEBUG: Selected model={model}, provider={provider}")
             print(f"🔍 DEBUG: enable_multi_image={enable_multi_image}")
 
             # Get provider instance
@@ -532,45 +727,8 @@ def create_generate_image_with_context(session_id: str, canvas_id: str, image_mo
                     except Exception:
                         pass
 
-                if effective_user_id:
-                    available_images = get_recent_images_from_session(session_id, effective_user_id, count=5)
-                    print(f"🔍 DEBUG: Found {len(available_images)} available images")
-
-                    if available_images:
-                        # Parse image references in prompt
-                        parse_result = parse_image_references(prompt, available_images)
-                        print(f"🔍 DEBUG: Parse result: {parse_result}")
-
-                        # If multiple images are referenced, prepare multi-image context
-                        if len(parse_result['referenced_images']) >= 2:
-                            print(f"🔍 DEBUG: Multi-image mode detected, switching to flux-kontext-multiple")
-                            model = 'flux-kontext-multiple'  # Override model for multi-image
-
-                            # Prepare multi-image context
-                            referenced_images = []
-                            for img_index in parse_result['referenced_images']:
-                                if img_index <= len(available_images):
-                                    img_info = available_images[img_index - 1]  # Convert to 0-based index
-                                    referenced_images.append(img_info)
-
-                            multi_image_context = {
-                                'images': referenced_images,
-                                'fusion_mode': parse_result['fusion_mode'],
-                                'original_prompt': prompt,
-                                'processed_prompt': parse_result['processed_prompt']
-                            }
-
-                            # Use processed prompt for generation
-                            prompt = parse_result['processed_prompt']
-                            print(f"🔍 DEBUG: Using processed prompt: {prompt}")
-
-                        elif len(parse_result['referenced_images']) == 1:
-                            # Single image reference, use traditional flow
-                            img_index = parse_result['referenced_images'][0]
-                            if img_index <= len(available_images):
-                                target_image = available_images[img_index - 1]
-                                input_image = target_image['file_id']
-                                print(f"🔍 DEBUG: Single image reference detected: {input_image}")
+                # 简化逻辑：移除复杂的意图分析，让Agent在更高层面做决策
+                print(f"🔍 DEBUG: Simplified image generation logic - Agent will handle intent analysis")
 
             # Check if the model supports input images before using previous image
             model_supports_input = 'kontext' in model.lower() or 'i2v' in model.lower() or 'edit' in model.lower()
@@ -690,6 +848,25 @@ def create_generate_image_with_context(session_id: str, canvas_id: str, image_mo
                 # Add multi-image context if available
                 if multi_image_context:
                     generation_ctx['multi_images'] = multi_image_context
+                # If override requests kontext-multiple, auto-collect recent images for multi-image workflow
+                try:
+                    if isinstance(model, str) and ('kontext' in model.lower()) and ('multiple' in model.lower()) and 'multi_images' not in generation_ctx:
+                        eff_uid = user_id
+                        if not eff_uid:
+                            try:
+                                from services.strands_context import get_user_id as _get_uid
+                                eff_uid = _get_uid()
+                            except Exception:
+                                pass
+                        recent = get_recent_images_from_session(session_id, eff_uid, count=3)
+                        if len(recent) >= 2:
+                            generation_ctx['multi_images'] = { 'images': recent[:3] }
+                            print(f"🔍 DEBUG: Auto-attached {len(generation_ctx['multi_images']['images'])} images for kontext-multiple workflow")
+                        else:
+                            print("⚠️ Not enough recent images for kontext-multiple, will fall back to single workflow")
+                except Exception as _e:
+                    print(f"⚠️ Failed to prepare multi-images context: {_e}")
+
                     print(f"🔍 DEBUG: Passing multi-image context to generator")
 
                 file_id, width, height, file_path = await generator.generate(
@@ -764,14 +941,14 @@ def create_generate_image_with_context(session_id: str, canvas_id: str, image_mo
             except Exception as db_error:
                 print(f"🔍 DEBUG: Database save error: {db_error}")
                 traceback.print_exc()
-            
+
             return f"Image generated successfully! File ID: {file_id}, Size: {width}x{height}. The image has been saved and is ready for use."
-            
+
         except Exception as e:
             print(f"Error generating image: {e}")
             traceback.print_exc()
             return f"Failed to generate image: {str(e)}"
-    
+
     return generate_image_with_context
 
 
@@ -784,7 +961,7 @@ def generate_image_id():
 # 这可以防止 "tool function missing" 警告
 @tool
 def strands_image_generators(
-    message: str = Field(default="This is a placeholder tool", description="Placeholder message")
+    message: Annotated[str, Field(description="Placeholder message")] = "This is a placeholder tool"
 ) -> str:
     """
     这是一个占位符工具，用于防止 strands 库的 "tool function missing" 警告。

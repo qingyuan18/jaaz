@@ -1,13 +1,14 @@
 """
 Strands上下文管理器
 用于在工具调用中传递session_id, canvas_id等上下文信息
+同时支持存储会话级的意图识别结果（例如 kontext_model）供工具兜底读取
 """
 import contextvars
 from typing import Dict, Any, Optional
 
 # 创建上下文变量
 _session_context: contextvars.ContextVar[Dict[str, Any]] = contextvars.ContextVar(
-    'session_context', 
+    'session_context',
     default={}
 )
 
@@ -33,7 +34,9 @@ def set_session_context(
         'canvas_id': canvas_id,
         'user_id': user_id,
         'model_info': model_info or {},
-        'tool_call_id': tool_call_id
+        'tool_call_id': tool_call_id,
+        # 意图识别结果占位（后续可通过 set_intention_result 写入）
+        'intention': {}
     }
     _session_context.set(context)
 
@@ -41,6 +44,26 @@ def set_session_context(
 def get_session_context() -> Dict[str, Any]:
     """获取当前会话上下文"""
     return _session_context.get({})
+
+
+def _update_context(update: Dict[str, Any]):
+    ctx = dict(get_session_context())
+    ctx.update(update)
+    _session_context.set(ctx)
+
+
+def set_intention_result(result: Dict[str, Any]):
+    """设置本次会话的意图识别结果，例如 {"mode": "single", "kontext_model": "flux-kontext"}"""
+    if not isinstance(result, dict):
+        return
+    ctx = dict(get_session_context())
+    ctx['intention'] = result
+    _session_context.set(ctx)
+
+
+def get_intention_result(default: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """获取当前会话的意图识别结果"""
+    return dict(get_session_context().get('intention') or (default or {}))
 
 
 def get_session_id() -> str:
@@ -90,7 +113,7 @@ class SessionContextManager:
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        if self.previous_context:
+        if self.previous_context is not None:
             _session_context.set(self.previous_context)
         else:
             _session_context.set({})

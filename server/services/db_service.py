@@ -35,15 +35,15 @@ class DatabaseService:
     def get_chat_history(self, session_id: str) -> List[Dict[str, Any]]:
         """Get chat history for a session for the current user"""
         user_id = get_current_user_id()
-        print(f"🔍 DEBUG: Getting chat history for session {session_id}, user {user_id}")
+        # print(f"🔍 DEBUG: Getting chat history for session {session_id}, user {user_id}")
         messages_data = self.user_aware_service.list_messages(session_id, user_id)
-        print(f"🔍 DEBUG: Raw messages_data from database: {len(messages_data)} items")
+        # print(f"🔍 DEBUG: Raw messages_data from database: {len(messages_data)} items")
 
-        for i, row in enumerate(messages_data):
-            print(f"🔍 DEBUG: Raw message {i}: {row}")
-            # 特别检查是否包含视频下载链接
-            if row.get('message') and 'Download' in str(row.get('message', '')):
-                print(f"🎬 DEBUG: Found potential video download message: {row}")
+        # for i, row in enumerate(messages_data):
+        #     print(f"🔍 DEBUG: Raw message {i}: {row}")
+        #     # 特别检查是否包含视频下载链接
+        #     if row.get('message') and 'Download' in str(row.get('message', '')):
+        #         print(f"🎬 DEBUG: Found potential video download message: {row}")
 
         messages = []
         for row in messages_data:
@@ -53,7 +53,7 @@ class DatabaseService:
                     # 尝试解析为JSON（新格式）
                     msg = json.loads(row['message'])
                     messages.append(msg)
-                    print(f"🔍 DEBUG: Successfully parsed JSON message: {msg}")
+                    # print(f"🔍 DEBUG: Successfully parsed JSON message: {msg}")
                 except json.JSONDecodeError:
                     # 如果不是JSON，则作为纯文本消息处理（旧格式）
                     msg = {
@@ -64,13 +64,13 @@ class DatabaseService:
                     if row.get('created_at'):
                         msg['timestamp'] = row['created_at']
                     messages.append(msg)
-                    print(f"🔍 DEBUG: Successfully parsed text message: {msg}")
+                    # print(f"🔍 DEBUG: Successfully parsed text message: {msg}")
                 except Exception as e:
                     print(f"❌ DEBUG: Failed to parse message: {e}")
                     print(f"❌ DEBUG: Raw message content: {row.get('message')}")
                     # 继续处理其他消息，不要因为一个消息解析失败就停止
 
-        print(f"🔍 DEBUG: Final parsed messages: {len(messages)} items")
+        # print(f"🔍 DEBUG: Final parsed messages: {len(messages)} items")
         return messages
 
     def list_sessions(self, canvas_id: str) -> List[Dict[str, Any]]:

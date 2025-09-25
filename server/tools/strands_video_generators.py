@@ -6,7 +6,7 @@ import os
 import traceback
 import base64
 import json
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Annotated
 from strands import tool
 from pydantic import Field
 
@@ -46,10 +46,11 @@ def create_generate_video_with_context(session_id: str, canvas_id: str, video_mo
 
     @tool
     async def generate_video_with_context(
-        prompt: str = Field(description="Detailed description of the video to generate"),
-        input_image: str = Field(default="", description="Optional image to use as reference for image-to-video generation. Pass image_id here, e.g. 'im_jurheut7.png'. Leave empty for text-to-video generation."),
-        duration: int = Field(default=5, description="Video duration in seconds (typically 3-10 seconds)"),
-        use_previous_image: bool = Field(default=True, description="Whether to automatically use the most recent image from the current session as input for image-to-video generation")
+        prompt: Annotated[str, Field(description="Detailed description of the video to generate")],
+        input_image: Annotated[str, Field(description="Optional image to use as reference for image-to-video generation. Pass image_id here, e.g. 'im_jurheut7.png'. Leave empty for text-to-video generation.")] = "",
+        duration: Annotated[int, Field(description="Video duration in seconds (typically 3-10 seconds)")] = 5,
+        use_previous_image: Annotated[bool, Field(description="Whether to automatically use the most recent image from the current session as input for image-to-video generation")] = True,
+        model_override: Annotated[str, Field(description="Override model to use for video generation (e.g., 'wan-t2i' or 'wan-i2v'). If set, takes precedence over configured video_model.")] = ""
     ) -> str:
         """
         Generate a video based on text prompt and optionally an input image.
@@ -78,9 +79,26 @@ def create_generate_video_with_context(session_id: str, canvas_id: str, video_mo
             
             model = video_model.get('model', 'wan-t2v')
             provider = video_model.get('provider', 'comfyui')
-            
+
+            # Respect explicit override first
+            _override = model_override if isinstance(model_override, str) else ""
+            if _override.strip():
+                model = _override.strip()
+                print(f"🎯 Using explicit model_override: {model}")
+            else:
+                # Fallback to session intention.generation_model if it's a WAN model
+                try:
+                    from services.strands_context import get_intention_result as _get_intent
+                    intent = _get_intent()
+                    gm = (intent or {}).get('generation_model')
+                    if isinstance(gm, str) and gm.lower().startswith('wan-'):
+                        model = gm
+                        print(f"🎯 Using intention generation_model as video model: {model}")
+                except Exception as _e:
+                    print(f"⚠️ Failed to read intention for video model fallback: {_e}")
+
             print(f"🔍 DEBUG: model={model}, provider={provider}")
-            
+
             # Get provider instance
             generator = PROVIDERS.get(provider)
             if not generator:
@@ -265,7 +283,7 @@ def generate_video_id():
 # 这可以防止 "tool function missing" 警告
 @tool
 def strands_video_generators(
-    message: str = Field(default="This is a placeholder tool", description="Placeholder message")
+    message: Annotated[str, Field(description="Placeholder message")] = "This is a placeholder tool"
 ) -> str:
     """
     这是一个占位符工具，用于防止 strands 库的 "tool function missing" 警告。
