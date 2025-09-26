@@ -230,7 +230,7 @@ export default function ComfyuiSetting({
       onConfigChange('comfyui', {
         ...config,
         models: DEFAULT_PROVIDERS_CONFIG.comfyui.models,
-        url: 'http://comfyui-alb-905118004.us-west-2.elb.amazonaws.com:8080',
+        url: 'http://ec2-34-216-22-132.us-west-2.compute.amazonaws.com:8188',
       })
     }
 
@@ -337,7 +337,7 @@ export default function ComfyuiSetting({
         <Label htmlFor="comfyui-url">{t('settings:provider.apiUrl')}</Label>
         <Input
           id="comfyui-url"
-          placeholder="http://comfyui-alb-905118004.us-west-2.elb.amazonaws.com:8080"
+          placeholder="http://ec2-34-216-22-132.us-west-2.compute.amazonaws.com:8188"
           value={comfyUrl}
           onChange={(e) => handleUrlChange(e.target.value)}
           className={`w-full ${
